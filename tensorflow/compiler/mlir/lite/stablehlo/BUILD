@@ -625,6 +625,7 @@ gentbl_cc_library(
 cc_library(
     name = "tfl_legalize_hlo",
     srcs = [
+        "transforms/generated_tflite_legalize_hlo.inc",
         "transforms/tflite_legalize_hlo.cc",
     ],
     hdrs = [
@@ -641,6 +642,7 @@ cc_library(
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:custom_call",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:dot_general",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:gather",
+        "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:iota",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:pad",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:reduce",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:reduce_window",
