@@ -155,7 +155,7 @@ cc_library(
 
 flatbuffer_cc_library(
     name = "conversion_metadata_fbs",
-    srcs = ["conversion_metadata.fbs"],
+    srcs = ["//tensorflow/compiler/mlir/lite/schema:conversion_metadata.fbs"],
     compatible_with = get_compatible_with_portable(),
 )
 
