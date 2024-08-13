@@ -615,6 +615,91 @@ LogicalResult ConvertReshapeDotRhsToBatchedDot(mhlo::DotGeneralOp dot,
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// BroadcastInDimsOp
+//===----------------------------------------------------------------------===//
+
+// Simplifies broadcast -> reshape patterns by removing unnecessary
+// unit dimensions from the broadcast's output shape.
+class SimplifyBroadcastInDimsReshape
+    : public OpRewritePattern<mhlo::BroadcastInDimOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(mhlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op->hasOneUse()) {
+      return rewriter.notifyMatchFailure(op, "has more than one use.");
+    }
+
+    auto reshape = mlir::dyn_cast<mhlo::ReshapeOp>(*op->getUsers().begin());
+    if (!reshape) {
+      return rewriter.notifyMatchFailure(op, "user not reshape.");
+    }
+
+    auto broadcast_type = mlir::cast<ShapedType>(op.getType());
+    auto broadcast_input_type =
+        mlir::cast<ShapedType>(op.getOperand().getType());
+    auto reshape_type = mlir::cast<ShapedType>(reshape.getType());
+
+    // Reshape must be squeezing unit dimensions.
+    if (!(reshape_type.getRank() < broadcast_type.getRank())) {
+      return rewriter.notifyMatchFailure(op, "reshape doesn't reduce rank.");
+    }
+
+    // Reshape and broadcast must have the same non-unit strides in the
+    // same order.
+    llvm::SmallVector<int64_t> broadcast_dim_to_reshape_dim(
+        broadcast_type.getRank());
+    int64_t reshape_dim_idx = -1;
+    for (auto [idx, dim] : llvm::enumerate(broadcast_type.getShape())) {
+      if (dim == 1) {
+        continue;
+      }
+
+      int64_t reshape_dim_size = 1;
+      while (reshape_dim_idx < reshape_type.getRank() - 1) {
+        reshape_dim_size = reshape_type.getDimSize(++reshape_dim_idx);
+        if (reshape_dim_size != 1) {
+          break;
+        }
+      }
+
+      if (dim != reshape_dim_size) {
+        return rewriter.notifyMatchFailure(
+            op, "reshape and broadcast have different non-unit dim sizes.");
+      }
+
+      broadcast_dim_to_reshape_dim[idx] = reshape_dim_idx;
+    }
+    // Unchecked reshape dim sizes are guaranteed to be unit at this point.
+
+    llvm::SmallVector<int64_t> current_broadcast_dims(
+        op.getBroadcastDimensions().getValues<int64_t>());
+    llvm::SmallVector<int64_t> new_broadcast_dims;
+    llvm::SmallVector<int64_t> new_broadcast_input_shape;
+
+    for (auto [idx, dim] : llvm::enumerate(broadcast_input_type.getShape())) {
+      if (dim == 1) {
+        continue;
+      }
+      new_broadcast_dims.push_back(
+          broadcast_dim_to_reshape_dim[current_broadcast_dims[idx]]);
+      new_broadcast_input_shape.push_back(dim);
+    }
+
+    auto new_broadcast_input_type = RankedTensorType::get(
+        new_broadcast_input_shape, broadcast_type.getElementType());
+    auto new_broadcast_input = rewriter.create<mhlo::ReshapeOp>(
+        op->getLoc(), new_broadcast_input_type, op.getOperand());
+    auto new_broadcast_dims_attr =
+        rewriter.getI64TensorAttr(new_broadcast_dims);
+
+    rewriter.replaceOpWithNewOp<mhlo::BroadcastInDimOp>(
+        reshape, reshape_type, new_broadcast_input, new_broadcast_dims_attr);
+
+    return success();
+  }
+};
+
 class OptimizePass
     : public PassWrapper<OptimizePass, OperationPass<func::FuncOp>> {
  public:
@@ -632,6 +717,7 @@ class OptimizePass
     patterns.add(FuseSliceConcat);
     patterns.add(ConvertReshapeDotRhsToBatchedDot);
     patterns.add(MergeConsecutivePad);
+    patterns.add<SimplifyBroadcastInDimsReshape>(&getContext());
     if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                             std::move(patterns)))) {
       return signalPassFailure();
