@@ -33,6 +33,7 @@ struct GpuEventStats {
 
   bool IsKernel() const { return !kernel_details.empty(); }
   bool IsMemCpy() const { return !memcpy_details.empty(); }
+  bool IsCudaGraph() const { return !cuda_graph_details.empty(); }
 
   bool IsXlaOp() const { return !hlo_op_names.empty(); }
   bool IsTfOp() const { return !tf_op_fullname.empty(); }
@@ -55,6 +56,7 @@ struct GpuEventStats {
   // Stats derived by grouping.
   std::optional<int64_t> group_id;
   bool is_eager = false;
+  absl::string_view cuda_graph_details;
 };
 
 // Stats for a host-side GPU launch XEvent.
