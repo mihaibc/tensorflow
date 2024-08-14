@@ -87,6 +87,15 @@ class PriorityFusionTest : public HloTestBase {
                                   /*count_multiple_input_accesses=*/true}};
 };
 
+class PriorityFusionWithTritonEnabledTest : public PriorityFusionTest {
+ public:
+  DebugOptions GetDebugOptionsForTest() override {
+    DebugOptions debug_options = PriorityFusionTest::GetDebugOptionsForTest();
+    debug_options.set_xla_gpu_enable_triton_softmax_priority_fusion(true);
+    return debug_options;
+  }
+};
+
 TEST_F(PriorityFusionTest, FuseWithSharedArgument) {
   auto module = ParseAndReturnVerifiedModule(R"(
     HloModule test_module
@@ -860,11 +869,8 @@ TEST_F(PriorityFusionTest, DoNotFuseProducerConsumerMergedTooLarge) {
   EXPECT_THAT(priority_fusion_.Run(module.get()), IsOkAndHolds(false));
 }
 
-TEST_F(PriorityFusionTest, CanMergeTritonFusionWithBothProducerAndConsumer) {
-#ifndef GOOGLE_CUDA
-  GTEST_SKIP() << "Triton fusion only enable for CUDA devices.";
-#endif
-
+TEST_F(PriorityFusionWithTritonEnabledTest,
+       CanMergeTritonFusionWithBothProducerAndConsumer) {
   const std::string kHloText = R"(
 HloModule t
 add {
@@ -897,13 +903,10 @@ ENTRY main {
   param_0 = f32[125]{0} parameter(0)
   param_1 = f32[125,127]{1,0} parameter(1)
   producer_fusion = f32[125,127]{1,0} fusion(param_0), kind=kLoop, calls=producer_computation
-  triton_softmax = f32[125,127]{1,0} fusion(producer_fusion), kind=kCustom, calls=triton_softmax_computation, backend_config={"fusion_backend_config": {"kind":"__triton"}}
+  triton_softmax = f32[125,127]{1,0} fusion(producer_fusion), kind=kCustom, calls=triton_softmax_computation, backend_config={"fusion_backend_config": {"kind":"__triton","block_level_fusion_config":{"output_tile_sizes":["1","127"],"num_warps":"1"}}}
   ROOT consumer_fusion = f32[125,127]{1,0} fusion(param_1, triton_softmax), kind=kLoop, calls=consumer_computation
 })";
   TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
-  auto debug_options = module->config().debug_options();
-  debug_options.set_xla_gpu_enable_triton_softmax_priority_fusion(true);
-  module->mutable_config().set_debug_options(debug_options);
 
   EXPECT_TRUE(priority_fusion_.Run(module.get()).value());
   EXPECT_TRUE(verifier().Run(module.get()).status().ok());
@@ -918,6 +921,68 @@ ENTRY main {
                   .has_block_level_fusion_config());
   EXPECT_EQ(root->backend_config<GpuBackendConfig>()
                 ->fusion_backend_config()
+                .block_level_fusion_config()
+                .output_tile_sizes_size(),
+            2);
+}
+
+TEST_F(PriorityFusionWithTritonEnabledTest, FuseTritonProduceWithTwoConsumers) {
+  const std::string kHloText = R"(
+HloModule t
+add {
+  Arg_0 = f32[] parameter(0)
+  Arg_1 = f32[] parameter(1)
+  ROOT add = f32[] add(Arg_0, Arg_1)
+}
+
+producer_computation {
+  parameter_0 = f32[125]{0} parameter(0)
+  ROOT broadcast = f32[125,127] broadcast(parameter_0), dimensions={0}
+}
+
+consumer_computation.1 {
+  parameter_0 = f32[125,127] parameter(0)
+  ROOT log = f32[125,127] log(parameter_0)
+}
+
+consumer_computation.2 {
+  parameter_0 = f32[125,127] parameter(0)
+  ROOT exp = f32[125,127] exponential(parameter_0)
+}
+
+ENTRY main {
+  param_0 = f32[125]{0} parameter(0)
+  producer_fusion = f32[125,127] fusion(param_0), kind=kCustom, calls=producer_computation, backend_config={"fusion_backend_config": {"kind":"__triton","block_level_fusion_config":{"output_tile_sizes":["1","127"],"num_warps":"1"}}}
+  consumer_fusion.1 = f32[125,127] fusion(producer_fusion), kind=kLoop, calls=consumer_computation.1
+  consumer_fusion.2 = f32[125,127] fusion(producer_fusion), kind=kLoop, calls=consumer_computation.2
+  ROOT tuple = (f32[125,127], f32[125,127]) tuple(consumer_fusion.1, consumer_fusion.2)
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+
+  EXPECT_TRUE(priority_fusion_.Run(module.get()).value());
+  EXPECT_TRUE(verifier().Run(module.get()).status().ok());
+
+  HloInstruction* root = module->entry_computation()->root_instruction();
+  HloInstruction *fusion1, *fusion2;
+  EXPECT_THAT(root, GmockMatch(m::Tuple(m::Fusion(&fusion1, m::Parameter()),
+                                        m::Fusion(&fusion2, m::Parameter()))));
+  EXPECT_TRUE(IsGenericTritonFusion(*fusion1));
+  TF_ASSERT_OK_AND_ASSIGN(auto backend_config1,
+                          fusion1->backend_config<GpuBackendConfig>());
+  EXPECT_TRUE(
+      backend_config1.fusion_backend_config().has_block_level_fusion_config());
+  EXPECT_EQ(backend_config1.fusion_backend_config()
+                .block_level_fusion_config()
+                .output_tile_sizes_size(),
+            2);
+
+  EXPECT_TRUE(IsGenericTritonFusion(*fusion2));
+  TF_ASSERT_OK_AND_ASSIGN(auto backend_config2,
+                          fusion2->backend_config<GpuBackendConfig>());
+  EXPECT_TRUE(
+      backend_config2.fusion_backend_config().has_block_level_fusion_config());
+  EXPECT_EQ(backend_config2.fusion_backend_config()
                 .block_level_fusion_config()
                 .output_tile_sizes_size(),
             2);
