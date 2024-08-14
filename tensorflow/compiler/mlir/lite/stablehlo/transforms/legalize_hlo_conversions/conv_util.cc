@@ -16,11 +16,13 @@ limitations under the License.
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypeInterfaces.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions/op_util_common.h"
@@ -113,6 +115,85 @@ Value CreatePadOpFromConvPadding(OpBuilder& b, mhlo::ConvolutionOp op) {
                                       hi_padding_attr, interior_padding_attr);
 
   return pad_op;
+}
+
+bool IsTransposeConvPaddingValid(mhlo::ConvolutionOp conv_op,
+                                 size_t num_spatial_dims,
+                                 ArrayRef<int64_t> strides,
+                                 ArrayRef<int64_t> padding) {
+  auto dnums = conv_op.getDimensionNumbers();
+  // The newly added spatial dimension requires zero left and right padding.
+  ArrayRef<int64_t> input_spatial_dims = dnums.getInputSpatialDimensions();
+  ArrayRef<int64_t> kernel_spatial_dims = dnums.getKernelSpatialDimensions();
+  ArrayRef<int64_t> output_spatial_dims = dnums.getOutputSpatialDimensions();
+
+  for (size_t i = 0; i < num_spatial_dims; ++i) {
+    int64_t stride = strides[i];
+    int64_t input_size = mlir::cast<ShapedType>(conv_op.getLhs().getType())
+                             .getDimSize(input_spatial_dims[i]);
+    int64_t kernel_size = mlir::cast<ShapedType>(conv_op.getRhs().getType())
+                              .getDimSize(kernel_spatial_dims[i]);
+    int64_t output_size = mlir::cast<ShapedType>(conv_op.getType())
+                              .getDimSize(output_spatial_dims[i]);
+
+    // stablehlo.convolution op needs explicit padding to be set to model any
+    // Transposed-Convolution in JAX/PT. Checking to see if-
+    // 1. Pre set padding matches to the desired padding
+    // 2. Output size respects the `VALID` padding scenario
+    if ((padding[2 * i] == padding[2 * i + 1]) &&
+        (((kernel_size - 1) != padding[2 * i]) ||
+         (output_size != (stride * (input_size - 1)) + kernel_size))) {
+      // padding[2 * i] == padding[2 * i + 1] means equal padding is applied
+      // on both sides of a spatial dimension.
+      // This happens when kernel_dim >= stride
+      return false;
+    } else if ((padding[2 * i] != padding[2 * i + 1]) &&
+               (((kernel_size - 1) != padding[2 * i]) ||
+                ((stride - 1) != padding[2 * i + 1]) ||
+                (output_size != (stride * input_size)))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool IsTransposeConvPaddingSame(mhlo::ConvolutionOp conv_op,
+                                size_t num_spatial_dims,
+                                ArrayRef<int64_t> strides) {
+  auto dnums = conv_op.getDimensionNumbers();
+  SmallVector<int64_t, 4> padding(
+      conv_op.getPadding().value().getValues<int64_t>().begin(),
+      conv_op.getPadding().value().getValues<int64_t>().end());
+  // The newly added spatial dimension requires zero left and right padding.
+  ArrayRef<int64_t> input_spatial_dims = dnums.getInputSpatialDimensions();
+  ArrayRef<int64_t> output_spatial_dims = dnums.getOutputSpatialDimensions();
+  for (size_t i = 0; i < num_spatial_dims; ++i) {
+    // In some cases the total padding is odd, so we have 1 leftover, which is
+    // why below we check pad_delta > 1.
+    int64_t pad_delta = std::abs(padding[2 * i] - padding[2 * i + 1]);
+    if (pad_delta > 1) {
+      return false;
+    }
+    int64_t stride = strides[i];
+    int64_t input_size = mlir::cast<ShapedType>(conv_op.getLhs().getType())
+                             .getDimSize(input_spatial_dims[i]);
+    int64_t output_size = mlir::cast<ShapedType>(conv_op.getType())
+                              .getDimSize(output_spatial_dims[i]);
+    // The reason for the below check is as follows:
+    // When computing the output, we have the following relation between
+    // o - output dim size, i - input dim size, s - stride, P - total pads
+    // o = (i-k+1) + (s-1)(i-1) + P
+    // Where the first term is the kernel applications on the input,
+    // the second term is the additional applications from the stride
+    // and P is a term that captures the total padding. After expanding we get
+    // o = si + k - s + 2 + P
+    // Here JAX sets P to cancel k-s+2, leading to the expression below
+    if (output_size != input_size * stride) {
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace mlir::odml

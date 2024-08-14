@@ -124,6 +124,7 @@ cc_library(
     hdrs = ["conv.h"],
     deps = [
         ":conv_util",
+        ":op_util_common",
         "//tensorflow/compiler/mlir/lite:tensorflow_lite",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
@@ -140,6 +141,7 @@ cc_library(
     hdrs = ["conv_util.h"],
     deps = [
         ":op_util_common",
+        "//tensorflow/core/lib/math:math_util",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
