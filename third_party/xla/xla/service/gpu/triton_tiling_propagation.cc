@@ -993,7 +993,8 @@ DimOrdersAndReqsOrError GetPropagatedDimOrdersAndRequirements(
 
 DimOrdersAndReqsOrError
 GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
-    const HloInstruction& hlo, TransformDirection transform_direction,
+    const HloInstruction& to_hlo, const HloInstruction& hlo,
+    TransformDirection transform_direction,
     const std::optional<int>& src_operand_index,
     const DimensionOrder& src_dim_order,
     const se::GpuComputeCapability& gpu_version,
@@ -1011,9 +1012,16 @@ GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
   if (hlo.opcode() == HloOpcode::kPad) {
     return "Pads are not fused yet.";
   }
+  const bool s4_supported = to_hlo.opcode() == HloOpcode::kDot &&
+                            hlo.opcode() == HloOpcode::kConvert &&
+                            hlo.GetModule()
+                                ->config()
+                                .debug_options()
+                                .xla_gpu_enable_triton_gemm_int4();
+
   for (const HloInstruction* operand : hlo.operands()) {
     if (!legacy_triton::IsTritonSupportedDataType(
-            operand->shape().element_type(), gpu_version)) {
+            operand->shape().element_type(), gpu_version, s4_supported)) {
       return "Unsupported input data type.";
     }
   }
@@ -1055,7 +1063,7 @@ GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
                operand->operand(0)->opcode() == HloOpcode::kConstant) &&
               std::holds_alternative<DimOrdersAndReqs>(
                   GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
-                      *operand, TransformDirection::kOutputToInput,
+                      to_hlo, *operand, TransformDirection::kOutputToInput,
                       /*src_operand_index=*/std::nullopt,
                       /*src_dim_order=*/
                       dim_orders_and_requirements.dim_orders.at(operand),

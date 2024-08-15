@@ -275,7 +275,8 @@ DimOrdersAndReqsOrError GetPropagatedDimOrdersAndRequirements(
 // kInputToOutput.
 DimOrdersAndReqsOrError
 GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
-    const HloInstruction& hlo, TransformDirection transform_direction,
+    const HloInstruction& to_hlo, const HloInstruction& hlo,
+    TransformDirection transform_direction,
     const std::optional<int>& src_operand_index,
     const DimensionOrder& src_dim_order,
     const se::GpuComputeCapability& gpu_version,

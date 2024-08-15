@@ -74,7 +74,8 @@ std::vector<HloOpcode> TritonSupportedTernaryElementwiseUpToFloatNormalization(
     PrimitiveType);
 
 // Data types that are supported by the legacy Triton emitters.
-bool IsTritonSupportedDataType(PrimitiveType, const se::GpuComputeCapability&);
+bool IsTritonSupportedDataType(PrimitiveType, const se::GpuComputeCapability&,
+                               bool s4_supported = false);
 
 // Checks elementwise operation against unary, binary, and ternary elementwise
 // operations supported by the legacy Triton emitters.

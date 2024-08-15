@@ -103,12 +103,16 @@ bool IsTritonSupportedDotOutputType(
 // Data types that are supported by the Triton emitters.
 // TODO(b/266862493): Support more data types (F8, F64, etc.).
 bool IsTritonSupportedDataType(PrimitiveType type,
-                               const se::GpuComputeCapability& gpu_version) {
+                               const se::GpuComputeCapability& gpu_version,
+                               bool s4_supported) {
   if (IsTritonSupportedDotOutputType(type, gpu_version)) {
     return true;
   }
   switch (type) {
     case PRED:
+      return true;
+    case S4:
+      return s4_supported;
     case S8:
     case S16:
     case S32:
@@ -187,17 +191,11 @@ CodegenDecision CanTritonHandleElementwise(
   // TODO(b/358580281): remove DebugOptions from this function after enabling
   // int4 in Triton GEMM.
   const auto debug_options = instr.GetModule()->config().debug_options();
-  LOG(ERROR) << "S4: " << instr.opcode() << " "
-             << instr.operand(0)->shape().element_type();
   if (instr.opcode() == HloOpcode::kConvert &&
       instr.operand(0)->shape().element_type() == S4) {
     if (debug_options.xla_gpu_enable_triton_gemm_int4()) {
-      LOG(ERROR) << "return supported for S4: " << instr.opcode() << " "
-                 << instr.operand(0)->shape().element_type();
       return CodegenDecision{};
     }
-    LOG(ERROR) << "return not supported for S4: " << instr.opcode() << " "
-               << instr.operand(0)->shape().element_type();
     return "xla_gpu_enable_triton_gemm_int4 is not enabled.";
   }
   if (!IsTritonSupportedDataType(instr.shape().element_type(), gpu_version)) {

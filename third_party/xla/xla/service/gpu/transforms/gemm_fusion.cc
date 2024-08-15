@@ -213,13 +213,13 @@ std::optional<DimOrdersAndReqs> GetOperandDimOrdersAndCombinedReqs(
 
 // Just a helper to reduce "unwrapping" code where we use this.
 std::optional<DimOrdersAndReqs> GetOperandDimOrdersAndCombinedReqsIfProfitable(
-    const HloInstruction& hlo, const DimensionOrder& dim_order,
-    const DotProperties& properties,
+    const HloInstruction& to_hlo, const HloInstruction& hlo,
+    const DimensionOrder& dim_order, const DotProperties& properties,
     const se::GpuComputeCapability& gpu_version,
     const DotRequirements& requirements) {
   DimOrdersAndReqsOrError dim_orders_and_new_reqs =
       GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
-          hlo, TransformDirection::kOutputToInput,
+          to_hlo, hlo, TransformDirection::kOutputToInput,
           /*src_operand_index=*/std::nullopt, dim_order, gpu_version,
           properties);
   if (!std::holds_alternative<DimOrdersAndReqs>(dim_orders_and_new_reqs)) {
@@ -244,8 +244,8 @@ std::optional<DimOrdersAndReqs> GetUserDimOrdersAndCombinedReqsIfProfitable(
     const DotRequirements& requirements) {
   DimOrdersAndReqsOrError dim_orders_and_new_reqs =
       GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
-          user, TransformDirection::kInputToOutput, user.operand_index(&hlo),
-          hlo_dim_order, gpu_version, properties);
+          hlo, user, TransformDirection::kInputToOutput,
+          user.operand_index(&hlo), hlo_dim_order, gpu_version, properties);
   if (!std::holds_alternative<DimOrdersAndReqs>(dim_orders_and_new_reqs)) {
     return std::nullopt;
   }
@@ -263,8 +263,8 @@ std::optional<DimOrdersAndReqs> GetUserDimOrdersAndCombinedReqsIfProfitable(
 // Builds the fusion map and the requirements which can later be used to
 // actually fuse that subgraph.
 FusionPlanAndRequirements BuildFusionPlanTowardOperands(
-    const HloInstruction& root_hlo, const DimensionOrder& root_dim_order,
-    const std::optional<int>& max_params,
+    const HloInstruction& to_hlo, const HloInstruction& root_hlo,
+    const DimensionOrder& root_dim_order, const std::optional<int>& max_params,
     const se::GpuComputeCapability& gpu_version,
     const DotProperties& properties,
     const DotRequirements& requirements_so_far) {
@@ -344,7 +344,8 @@ FusionPlanAndRequirements BuildFusionPlanTowardOperands(
       continue;
     }
     auto opt_result = GetOperandDimOrdersAndCombinedReqsIfProfitable(
-        original_hlo, dim_order, properties, gpu_version, combined_reqs);
+        to_hlo, original_hlo, dim_order, properties, gpu_version,
+        combined_reqs);
     if (!opt_result.has_value()) {
       CHECK(fusion_plan_map
                 .insert({node_id, {&original_hlo, /*should_fuse=*/false}})
@@ -450,16 +451,16 @@ HloInstruction& BuildFusionTowardOperands(
 // The return value contains the HLOs corresponding to `root_hlo` and the
 // requirements corresponding to the whole fusion so far.
 HlosAndRequirements FuseTowardOperands(
-    const HloInstruction& root_hlo, const DimensionOrder& root_dim_order,
-    const std::optional<int>& max_params,
+    const HloInstruction& to_hlo, const HloInstruction& root_hlo,
+    const DimensionOrder& root_dim_order, const std::optional<int>& max_params,
     const se::GpuComputeCapability& gpu_version,
     const DotProperties& properties, const DotRequirements& requirements_so_far,
     HloComputation::Builder& builder,            // append
     std::vector<HloInstruction*>& fusion_params  // append
 ) {
   FusionPlanAndRequirements fusion_plan_and_reqs =
-      BuildFusionPlanTowardOperands(root_hlo, root_dim_order, max_params,
-                                    gpu_version, properties,
+      BuildFusionPlanTowardOperands(to_hlo, root_hlo, root_dim_order,
+                                    max_params, gpu_version, properties,
                                     requirements_so_far);
   HloInstruction& fused_hlo_or_param = BuildFusionTowardOperands(
       fusion_plan_and_reqs.fusion_plan, builder, fusion_params);
@@ -489,7 +490,7 @@ absl::StatusOr<HlosAndRequirements> FuseDotOperand(
   TF_ASSIGN_OR_RETURN(const FusionContext context,
                       FusionContext::FromDotOperand(dot, operand_index));
   const HloInstruction& operand = *dot.operand(operand_index);
-  return FuseTowardOperands(operand, context.dim_orders().at(&operand),
+  return FuseTowardOperands(dot, operand, context.dim_orders().at(&operand),
                             TritonFusionAnalysis::kMaxParameterPerDotOperand,
                             gpu_version, context.dot_properties(),
                             context.requirements(), builder, fusion_params);
@@ -561,7 +562,7 @@ HlosAndRequirements FuseTowardUsers(
         new_operands.push_back(const_cast<HloInstruction*>(&fused_hlo));
       } else {
         HlosAndRequirements hlos_and_requirements = FuseTowardOperands(
-            operand, operand_dim_orders.at(&operand),
+            user, operand, operand_dim_orders.at(&operand),
             /*max_params=*/std::nullopt, gpu_version, properties,
             combined_requirements, builder, fusion_params);
         new_operands.push_back(
@@ -782,7 +783,6 @@ absl::StatusOr<bool> RunOnComputation(
   TF_RETURN_IF_ERROR(computation->Accept(&visitor));
   return visitor.changed();
 }
-
 
 }  // namespace
 
