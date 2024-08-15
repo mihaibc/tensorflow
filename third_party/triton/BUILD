@@ -11,3 +11,9 @@
 #     visibility = ["//third_party/triton:__subpackages__"],
 # )
 # copybara:uncomment_end
+
+filegroup(
+    name = "workspace",
+    srcs = ["workspace.bzl"],
+    visibility = ["//platforms/xla/experimental/tools/triton:__subpackages__"],
+)
