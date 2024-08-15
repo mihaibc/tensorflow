@@ -519,7 +519,10 @@ def make_tensor_proto(values, dtype=None, shape=None, verify_shape=False,
       nparray = np.empty(shape, dtype=np_dt)
     else:
       _AssertCompatible(values, dtype)
-      nparray = np.array(values, dtype=np_dt)
+      if dtype is object or dtype is None:
+        nparray = np.array(values, dtype=np_dt)
+      else:
+        nparray = np.array(values).astype(dtype.as_numpy_dtype)
       # check to them.
       # We need to pass in quantized values as tuples, so don't apply the shape
       if (list(nparray.shape) != _GetDenseDimensions(values) and
