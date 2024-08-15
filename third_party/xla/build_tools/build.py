@@ -103,6 +103,7 @@ class Build:
   action_env: Dict[str, Any] = dataclasses.field(default_factory=dict)
   test_env: Dict[str, Any] = dataclasses.field(default_factory=dict)
   options: Dict[str, Any] = dataclasses.field(default_factory=dict)
+  extra_setup_commands: Tuple[List[str], ...] = ()
 
   def bazel_test_command(self) -> List[str]:
     """Returns a bazel test command for this build.
@@ -165,6 +166,25 @@ class Build:
 
     sh(["docker", "run", *options, self.image_url, *command])
 
+  def setup_commands(self):
+    """Returns list of setup commands for a build.
+
+    This includes `extra_setup_commands` provided to the Build constructor.
+    """
+    cmds = []
+    cmds.append(["./github/xla/.kokoro/generate_index_html.sh", "index.html"])
+    if self.repo != "openxla/xla":
+      _, repo_name = self.repo.split("/")
+      cmds.append([
+          "git",
+          "clone",
+          "--depth=1",
+          f"https://github.com/{self.repo}",
+          f"./github/{repo_name}",
+      ])
+
+    return [*cmds, *self.extra_setup_commands]
+
 
 def _tag_filters_for_compute_capability(
     compute_capability: int,
@@ -203,6 +223,22 @@ def nvidia_gpu_build_with_compute_capability(
           run_under="//tools/ci_build/gpu_build:parallel_gpu_execute",
           repo_env=f"TF_CUDA_COMPUTE_CAPABILITIES={compute_capability/10}",
           **_DEFAULT_BAZEL_OPTIONS,
+      ),
+      extra_setup_commands=(
+          ["nvidia-smi"],
+          # TODO(b/338885148): Remove this after TF was updated to cuDNN 9
+          [
+              "sed",
+              "-i",
+              r"s/@sigbuild-r2\.17-clang_/@sigbuild-r2.17-clang-cudnn9_/g",
+              "github/xla/.bazelrc",
+          ],
+          [
+              "sed",
+              "-i",
+              r"s/8\.9\.7\.29/9.1.1/g",
+              "github/xla/.bazelrc",
+          ],
       ),
   )
 
@@ -361,37 +397,10 @@ def main():
   kokoro_job_name = os.getenv("KOKORO_JOB_NAME")
   build = _KOKORO_JOB_NAME_TO_BUILD_MAP[kokoro_job_name]
 
-  sh(["./github/xla/.kokoro/generate_index_html.sh", "index.html"])
+  for cmd in build.setup_commands():
+    sh(cmd)
 
-  _, repo_name = build.repo.split("/")
-  if build.repo != "openxla/xla":
-    sh([
-        "git",
-        "clone",
-        "--depth=1",
-        f"https://github.com/{build.repo}",
-        f"./github/{repo_name}",
-    ])
-
-  # TODO(b/338885148): Remove this block after TF was updated to cuDNN 9
-  if build.type_ in (BuildType.GPU, BuildType.GPU_CONTINUOUS):
-    sh(
-        [
-            "sed",
-            "-i",
-            r"s/@sigbuild-r2\.17-clang_/@sigbuild-r2.17-clang-cudnn9_/g",
-            "github/xla/.bazelrc",
-        ],
-    )
-    sh(
-        [
-            "sed",
-            "-i",
-            r"s/8\.9\.7\.29/9.1.1/g",
-            "github/xla/.bazelrc",
-        ],
-    )
-    sh(["nvidia-smi"])
+  sh(["parallel", "--help"])
 
   build.pull_and_run_docker_image(
       _CONTAINER_NAME,
