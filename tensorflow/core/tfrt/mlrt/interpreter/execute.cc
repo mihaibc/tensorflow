@@ -214,6 +214,10 @@ void UnwindOnError(ExecutionContext& context, int64_t pc) {
 
       RegisterSpan reg_span(kernel.results(), current_function->regs());
 
+      context.LogError(absl::InternalError(absl::StrCat(
+          "Unwinding error for kernel ", kernel.code(), " at pc: ", pc,
+          ", before function addr: ", current_function->pc_)));
+
       for (Value& reg : reg_span) {
         reg.HandleError(context_value);
         if (context.state_ != ExecutionContext::State::kError) {
